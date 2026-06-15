@@ -1,0 +1,27 @@
+# systemd unit for running Megan directly on a VPS (non-Docker).
+#
+#   sudo cp deploy/megan.service /etc/systemd/system/megan.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now megan
+#
+# Adjust User, WorkingDirectory, and the venv path to your install.
+
+[Unit]
+Description=Megan personal assistant
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=megan
+WorkingDirectory=/opt/megan
+EnvironmentFile=/opt/megan/.env
+ExecStart=/opt/megan/.venv/bin/megan
+Restart=always
+RestartSec=5
+# Don't hammer Telegram on a crash loop.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

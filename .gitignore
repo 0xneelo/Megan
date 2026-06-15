@@ -1,0 +1,36 @@
+# Secrets / env
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+secrets/
+*.pem
+*_key
+id_*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data / runtime
+data/
+downloads/
+*.log
+vault/          # local Obsidian vault if not git-backed elsewhere
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

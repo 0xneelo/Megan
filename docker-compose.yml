@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: megan
+      POSTGRES_PASSWORD: megan
+      POSTGRES_DB: megan
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U megan"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  megan:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Override the host so Megan reaches the compose DB, not localhost.
+      DATABASE_URL: postgresql://megan:megan@db:5432/megan
+    volumes:
+      # Persist the Telethon session, downloads, and the Obsidian vault.
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./vault:/app/vault
+      - ./megan.session:/app/megan.session
+
+volumes:
+  pgdata:
