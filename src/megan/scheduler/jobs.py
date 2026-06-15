@@ -68,6 +68,15 @@ def build_scheduler(orch: Orchestrator) -> AsyncIOScheduler:
         coalesce=True,
     )
 
+    # Requeue ambiguous items for another pass — daily, early.
+    scheduler.add_job(
+        orch.run_requeue_ambiguous,
+        CronTrigger(hour=7, minute=30),
+        id="requeue_ambiguous",
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Obsidian vault git sync — keep cross-device history fresh.
     scheduler.add_job(
         orch.run_vault_sync,

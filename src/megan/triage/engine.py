@@ -8,6 +8,7 @@ unlock real inline keyboards — that's the spec's documented de-risk path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -60,43 +61,50 @@ class TriageEngine:
         self.linear = linear
         self.obsidian = obsidian
         self.send = send
+        # Serialize triage so the <=4-asks check and the ask insert can't
+        # interleave (the backlog drip and an inbound message both call in).
+        # Single-process correctness; multi-process needs a DB advisory lock.
+        self._lock = asyncio.Lock()
 
     # ----------------------------------------------------- entry points
     async def maybe_advance(self) -> bool:
         """If a slot is free and an item is pending, start triaging it.
 
-        Returns True if it started a triage exchange. Enforces the <=4 rule here.
+        Returns True if it started a triage exchange. Enforces the <=4 rule here,
+        atomically with respect to other triage advances via the engine lock.
         """
-        if not await self.repo.has_free_ask_slot(self.settings.max_open_asks):
-            return False
-        item = await self.repo.next_pending_item()
-        if item is None:
-            return False
-        await self._run_triage(item, ask=None, prior_question=None, owner_answer=None)
-        return True
+        async with self._lock:
+            if not await self.repo.has_free_ask_slot(self.settings.max_open_asks):
+                return False
+            item = await self.repo.next_pending_item()
+            if item is None:
+                return False
+            await self._run_triage(item, ask=None, prior_question=None, owner_answer=None)
+            return True
 
     async def handle_owner_answer(self, ask: dict[str, Any], answer_text: str) -> None:
         """Continue triage for the item tied to an open ask, with the owner's answer."""
-        inbox_id = ask.get("inbox_id")
-        if inbox_id is None:
-            await self.repo.answer_ask(ask["id"])
-            return
-        item = await self.repo.get_inbox(inbox_id)
-        if item is None:
-            await self.repo.answer_ask(ask["id"])
-            return
+        async with self._lock:
+            inbox_id = ask.get("inbox_id")
+            if inbox_id is None:
+                await self.repo.answer_ask(ask["id"])
+                return
+            item = await self.repo.get_inbox(inbox_id)
+            if item is None:
+                await self.repo.answer_ask(ask["id"])
+                return
 
-        suggestions = ask.get("suggested_answers") or []
-        resolved = resolve_answer(answer_text, suggestions)
-        state = ask.get("state") or {}
-        last_q = state.get("last_question") or ask.get("question")
+            suggestions = ask.get("suggested_answers") or []
+            resolved = resolve_answer(answer_text, suggestions)
+            state = ask.get("state") or {}
+            last_q = state.get("last_question") or ask.get("question")
 
-        await self._run_triage(
-            item,
-            ask=ask,
-            prior_question=last_q,
-            owner_answer=resolved,
-        )
+            await self._run_triage(
+                item,
+                ask=ask,
+                prior_question=last_q,
+                owner_answer=resolved,
+            )
 
     # ----------------------------------------------------- core loop step
     async def _run_triage(
@@ -158,7 +166,9 @@ class TriageEngine:
             await self.repo.set_inbox_status(inbox_id, "dropped")
             log.info("dropped inbox %s: %s", inbox_id, args.get("reason"))
         elif tool == T.MARK_AMBIGUOUS:
-            await self.repo.set_inbox_status(inbox_id, "pending")
+            # Distinct status so the drip doesn't re-pick it immediately; a daily
+            # job requeues ambiguous items for one more pass.
+            await self.repo.set_inbox_status(inbox_id, "ambiguous")
             log.info("inbox %s marked ambiguous: %s", inbox_id, args.get("reason"))
         else:
             log.warning("unknown triage tool: %s", tool)
@@ -209,6 +219,9 @@ class TriageEngine:
             )
         except Exception as exc:  # noqa: BLE001
             log.error("Linear create failed for inbox %s: %s", inbox_id, exc)
+            # Reset to pending so a later drip retries it (the ask is already
+            # answered, so the slot frees and the item isn't orphaned in 'asking').
+            await self.repo.set_inbox_status(inbox_id, "pending")
             await self.send("Couldn't reach Linear — I'll keep this and retry.")
             return
 
@@ -255,6 +268,7 @@ class TriageEngine:
             )
         except Exception as exc:  # noqa: BLE001
             log.error("Obsidian write failed: %s", exc)
+            await self.repo.set_inbox_status(item["id"], "pending")
             await self.send("Couldn't write to the vault — I'll keep this and retry.")
             return
 

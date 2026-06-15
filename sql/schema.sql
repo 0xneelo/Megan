@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS inbox (
     extracted_text  TEXT,                            -- after transcription / OCR / fetch
     meta            JSONB       NOT NULL DEFAULT '{}'::jsonb,
     classify_type   TEXT,                            -- task | note | read_later | question | ambiguous
-    status          TEXT        NOT NULL DEFAULT 'pending',  -- pending | asking | routed | dropped
+    status          TEXT        NOT NULL DEFAULT 'pending',  -- pending | asking | routed | dropped | ambiguous | needs_attention
     routed_to       TEXT,                            -- linear:LIN-432 | obsidian:path | readlater:id
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at    TIMESTAMPTZ,

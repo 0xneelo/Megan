@@ -70,19 +70,28 @@ class IngestPipeline:
             # merge any extraction metadata (image kind/intent, link url, ...)
             merged = {**(item.meta or {}), **extra_meta}
             row["meta"] = merged
-        if extracted:
-            await self.repo.set_inbox_extracted(inbox_id, extracted)
-            row["extracted_text"] = extracted
+
+        extracted = (extracted or "").strip()
+        if not extracted:
+            # Extraction yielded nothing (empty transcript, dead link, unreadable
+            # file). Park it as needs_attention so it isn't invisibly stuck pending
+            # — next_pending_item requires extracted_text, so it'd never surface.
+            log.warning("inbox %s extracted to empty (%s); needs attention", inbox_id, item.raw_type)
+            await self.repo.set_inbox_status(inbox_id, "needs_attention")
+            row["status"] = "needs_attention"
+            return row
+
+        await self.repo.set_inbox_extracted(inbox_id, extracted)
+        row["extracted_text"] = extracted
 
         # Cheap first-pass classification.
-        if extracted:
-            try:
-                kind = await self.claude.classify(extracted)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("classify failed for inbox %s: %s", inbox_id, exc)
-                kind = "ambiguous"
-            await self.repo.set_inbox_classify(inbox_id, kind)
-            row["classify_type"] = kind
+        try:
+            kind = await self.claude.classify(extracted)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("classify failed for inbox %s: %s", inbox_id, exc)
+            kind = "ambiguous"
+        await self.repo.set_inbox_classify(inbox_id, kind)
+        row["classify_type"] = kind
 
         return row
 

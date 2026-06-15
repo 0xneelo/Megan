@@ -160,13 +160,17 @@ class Orchestrator:
         pending = await self.repo.count_pending()
         open_asks = await self.repo.count_open_asks()
         read_later = await self.repo.count_read_later_undigested()
+        needs_attn = await self.repo.count_needs_attention()
         cost = await self.repo.month_cost_usd()
-        return (
-            f"Pending to triage: {pending}\n"
-            f"Open questions: {open_asks}/{self.settings.max_open_asks}\n"
-            f"Read-later queue: {read_later}\n"
-            f"Anthropic spend this month: ${cost:.2f}"
-        )
+        lines = [
+            f"Pending to triage: {pending}",
+            f"Open questions: {open_asks}/{self.settings.max_open_asks}",
+            f"Read-later queue: {read_later}",
+        ]
+        if needs_attn:
+            lines.append(f"Couldn't read (needs attention): {needs_attn}")
+        lines.append(f"Anthropic spend this month: ${cost:.2f}")
+        return "\n".join(lines)
 
     async def _report_agent(self, host_name: str) -> None:
         result = await self.monitor.collect(host_name)
@@ -224,13 +228,29 @@ class Orchestrator:
     async def run_reminders(self) -> None:
         if self._in_quiet_hours():
             return
-        if not await self.repo.has_free_ask_slot(self.settings.max_open_asks):
-            return
         due = await self.linear.issues_due_through_today()
         if not due:
             return
-        lines = [f"- {i['identifier']} {i['title']} (due {i.get('dueDate')})" for i in due[:5]]
+        # De-dup: only nag about a given issue once per day, so the hourly check
+        # doesn't re-send the same overdue list every hour.
+        today = self._now().date().isoformat()
+        sent = await self.repo.kv_get("reminders_sent") or {}
+        if sent.get("date") != today:
+            sent = {"date": today, "ids": []}
+        already = set(sent.get("ids", []))
+        fresh = [i for i in due if i["identifier"] not in already]
+        if not fresh:
+            return
+        lines = [f"- {i['identifier']} {i['title']} (due {i.get('dueDate')})" for i in fresh[:5]]
         await self.userbot.send("Due today / overdue:\n" + "\n".join(lines))
+        sent["ids"] = list(already | {i["identifier"] for i in fresh})
+        await self.repo.kv_set("reminders_sent", sent)
+
+    async def run_requeue_ambiguous(self) -> None:
+        """Give items previously parked as ambiguous one more triage pass."""
+        n = await self.repo.requeue_ambiguous(older_than_hours=12)
+        if n:
+            log.info("requeued %d ambiguous item(s) for another pass", n)
 
     async def run_morning_brief(self, force: bool = False) -> None:
         if not force and self._in_quiet_hours():
@@ -238,10 +258,13 @@ class Orchestrator:
         due = await self.linear.issues_due_through_today()
         pending = await self.repo.count_pending()
         read_later = await self.repo.count_read_later_undigested()
+        needs_attn = await self.repo.count_needs_attention()
         lines = ["Morning. Here's today:"]
         lines.append(f"- {len(due)} task(s) due/overdue")
         lines.append(f"- {pending} item(s) waiting to be sorted")
         lines.append(f"- {read_later} unread saved item(s)")
+        if needs_attn:
+            lines.append(f"- {needs_attn} item(s) I couldn't read — resend?")
         if due:
             lines.append("")
             lines += [f"  {i['identifier']} {i['title']}" for i in due[:5]]

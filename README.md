@@ -234,6 +234,23 @@ The test suite covers the pure logic that doesn't need a DB or network: dedup
 hashing, due-date parsing, the quick-reply rendering/parsing, the read-only
 command guard, and config defaults.
 
+There's also a **Postgres-backed integration test** for the triage state machine
+(the ≤4-asks guard, failed-route recovery, ambiguous parking, needs-attention for
+unreadable items). It skips unless `DATABASE_URL` is set; run it against a
+throwaway cluster with:
+
+```bash
+./scripts/run_integration_tests.sh
+```
+
+---
+
+## Roadmap to production
+
+This repo is the working service. **`PLAN.md`** is a prioritized build-out plan
+(P0 install-blockers → P1 robustness → P2 scale) for taking it to a
+production-ready, horizontally scalable deployment.
+
 ---
 
 ## License

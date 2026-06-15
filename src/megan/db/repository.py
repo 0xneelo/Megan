@@ -83,12 +83,43 @@ class Repository:
             UPDATE inbox
             SET status = $2,
                 routed_to = COALESCE($3, routed_to),
-                processed_at = CASE WHEN $2 IN ('routed', 'dropped') THEN now() ELSE processed_at END
+                processed_at = CASE
+                    WHEN $2 IN ('routed', 'dropped', 'ambiguous', 'needs_attention') THEN now()
+                    ELSE processed_at
+                END
             WHERE id = $1
             """,
             inbox_id,
             status,
             routed_to,
+        )
+
+    async def requeue_ambiguous(self, older_than_hours: int = 12) -> int:
+        """Flip stale 'ambiguous' items back to 'pending' for one more triage pass.
+
+        Run on a slow cadence (daily) so ambiguous items get revisited without
+        looping. Returns the number requeued.
+        """
+        pool = await get_pool()
+        val = await pool.fetchval(
+            """
+            WITH moved AS (
+                UPDATE inbox
+                SET status = 'pending', processed_at = NULL
+                WHERE status = 'ambiguous'
+                  AND processed_at < now() - make_interval(hours => $1)
+                RETURNING id
+            )
+            SELECT count(*) FROM moved
+            """,
+            older_than_hours,
+        )
+        return int(val or 0)
+
+    async def count_needs_attention(self) -> int:
+        pool = await get_pool()
+        return int(
+            await pool.fetchval("SELECT count(*) FROM inbox WHERE status = 'needs_attention'")
         )
 
     async def next_pending_item(self) -> dict[str, Any] | None:
